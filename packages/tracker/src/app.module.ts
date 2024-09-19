@@ -26,6 +26,7 @@ require('dotenv').config();
   imports: [
     ConfigModule.forRoot({
       load: [configuration],
+      envFilePath: ['config/.env', '.env'],
     }),
 
     HealthCheckModule,
@@ -54,6 +55,13 @@ require('dotenv').config();
         TokenMintEntity,
       ],
       synchronize: true,
+      ...(process.env.DATABASE_SSL == 'true'
+        ? {
+            ssl: {
+              rejectUnauthorized: false,
+            },
+          }
+        : {}),
     }),
   ],
   controllers: [],

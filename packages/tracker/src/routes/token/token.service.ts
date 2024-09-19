@@ -21,6 +21,66 @@ export class TokenService {
     private readonly txOutRepository: Repository<TxOutEntity>,
   ) {}
 
+  async listAllTokens(offset: number = 0, limit: number = 10) {
+    // Optimize the query by using subqueries with indexes
+    const tokens = await this.tokenInfoRepository
+      .createQueryBuilder('token')
+      .select([
+        'token.decimals as "decimals"',
+        'token.genesis_txid as "genesisTxid"',
+        'token.raw_info as "info"',
+        'token.minter_pubkey as "minterPubKey"',
+        'token.name as "name"',
+        'token.symbol as "symbol"',
+        'token.reveal_txid as "revealTxid"',
+        'token.reveal_height as "revealHeight"',
+        'token.token_pubkey as "tokenPubKey"',
+        'token.token_id as "tokenId"'
+      ])
+      .addSelect(subQuery => {
+        return subQuery
+          .select('COALESCE(SUM(tm.token_amount), 0)', 'supply')
+          .from('token_mint', 'tm')
+          .where('tm.token_pubkey = token.token_pubkey');
+      }, 'supply')
+      .addSelect(subQuery => {
+        return subQuery
+          .select('COUNT(DISTINCT txo.owner_pkh)', 'holders')
+          .from('tx_out', 'txo')
+          .where('txo.xonly_pubkey = token.token_pubkey')
+          .andWhere('txo.spend_txid IS NULL');
+      }, 'holders')
+      .orderBy('token.createdAt', 'ASC')
+      .skip(offset)
+      .take(limit)
+      .getRawMany();
+
+    return tokens.map(token => ({
+      ...this.renderTokenInfo(token),
+      supply: parseInt(token.supply, 10),
+      holders: parseInt(token.holders, 10)
+    }));
+  }
+
+  async countAllTokens() {
+    return await this.tokenInfoRepository.count();
+  }
+
+  async getTokenSupply(tokenIdOrTokenAddr: string): Promise<number | null> {
+    const tokenInfo = await this.getTokenInfoByTokenIdOrTokenAddress(tokenIdOrTokenAddr);
+    if (!tokenInfo) {
+      return null;
+    }
+
+    const result = await this.tokenInfoRepository.query(`
+      SELECT COALESCE(SUM(token_amount), 0) as total_supply
+      FROM token_mint
+      WHERE token_pubkey = $1
+    `, [tokenInfo.tokenPubKey]);
+
+    return parseInt(result[0]?.total_supply || '0', 10);
+  }  
+
   async getTokenInfoByTokenIdOrTokenAddress(tokenIdOrTokenAddr: string) {
     let where;
     if (tokenIdOrTokenAddr.includes('_')) {

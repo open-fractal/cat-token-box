@@ -30,6 +30,14 @@ async function bootstrap() {
   app.setGlobalPrefix('api');
   app.enableCors();
 
+  app.use((req, res, next) => {
+    res.header(
+      'Cache-Control',
+      'public, max-age=30, stale-while-revalidate=300',
+    ); // Set max-age to 5 seconds with 5 seconds stale-while-revalidate
+    next();
+  });
+
   await app.listen(process.env.API_PORT || 3000);
   console.log(`Application is running on: ${await app.getUrl()}`);
 }

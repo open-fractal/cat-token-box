@@ -68,4 +68,6 @@ export class MinterService {
     }
     return { utxos, trackerBlockHeight: lastProcessedHeight };
   }
+
+  
 }
