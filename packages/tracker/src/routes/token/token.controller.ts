@@ -24,15 +24,15 @@ export class TokenController {
   })
   async listAllTokens(
     @Query('offset') offset: number = 0,
-    @Query('limit') limit: number = 10
+    @Query('limit') limit: number = 10,
   ) {
     try {
       const tokens = await this.tokenService.listAllTokens(offset, limit);
       const total = await this.tokenService.countAllTokens();
-      
+
       return okResponse({
         tokens,
-        total
+        total,
       });
     } catch (e) {
       return errorResponse(e);
@@ -48,7 +48,9 @@ export class TokenController {
     type: String,
     description: 'token id or token address',
   })
-  async getTokenSupply(@Param('tokenIdOrTokenAddr') tokenIdOrTokenAddr: string) {
+  async getTokenSupply(
+    @Param('tokenIdOrTokenAddr') tokenIdOrTokenAddr: string,
+  ) {
     try {
       const supply = await this.tokenService.getTokenSupply(tokenIdOrTokenAddr);
       return okResponse({ supply });
@@ -56,7 +58,7 @@ export class TokenController {
       return errorResponse(e);
     }
   }
-  
+
   @Get(':tokenIdOrTokenAddr')
   @ApiTags('token')
   @ApiOperation({ summary: 'Get token info by token id or token address' })
@@ -69,9 +71,10 @@ export class TokenController {
   async getTokenInfo(@Param('tokenIdOrTokenAddr') tokenIdOrTokenAddr: string) {
     try {
       const tokenInfo =
-        await this.tokenService.getTokenInfoByTokenIdOrTokenAddress(
+        await this.tokenService.getTokenInfoByTokenIdOrTokenAddressDisplay(
           tokenIdOrTokenAddr,
         );
+      console.log(tokenInfo);
       return okResponse(tokenInfo);
     } catch (e) {
       return errorResponse(e);

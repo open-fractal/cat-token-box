@@ -22,43 +22,52 @@ export class TokenService {
   ) {}
 
   async listAllTokens(offset: number = 0, limit: number = 10) {
-    // Optimize the query by using subqueries with indexes
-    const tokens = await this.tokenInfoRepository
-      .createQueryBuilder('token')
-      .select([
-        'token.decimals as "decimals"',
-        'token.genesis_txid as "genesisTxid"',
-        'token.raw_info as "info"',
-        'token.minter_pubkey as "minterPubKey"',
-        'token.name as "name"',
-        'token.symbol as "symbol"',
-        'token.reveal_txid as "revealTxid"',
-        'token.reveal_height as "revealHeight"',
-        'token.token_pubkey as "tokenPubKey"',
-        'token.token_id as "tokenId"'
-      ])
-      .addSelect(subQuery => {
-        return subQuery
-          .select('COALESCE(SUM(tm.token_amount), 0)', 'supply')
-          .from('token_mint', 'tm')
-          .where('tm.token_pubkey = token.token_pubkey');
-      }, 'supply')
-      .addSelect(subQuery => {
-        return subQuery
-          .select('COUNT(DISTINCT txo.owner_pkh)', 'holders')
-          .from('tx_out', 'txo')
-          .where('txo.xonly_pubkey = token.token_pubkey')
-          .andWhere('txo.spend_txid IS NULL');
-      }, 'holders')
-      .orderBy('token.createdAt', 'ASC')
-      .skip(offset)
-      .take(limit)
-      .getRawMany();
+    let sql = `
+      WITH token_supply AS (
+        SELECT 
+          token_pubkey,
+          COALESCE(SUM(token_amount), 0) AS supply
+        FROM token_mint
+        GROUP BY token_pubkey
+      ),
+      token_holders AS (
+        SELECT 
+          xonly_pubkey,
+          COUNT(DISTINCT owner_pkh) AS holders
+        FROM tx_out
+        WHERE spend_txid IS NULL
+        GROUP BY xonly_pubkey
+      )
+      SELECT
+        token.decimals AS "decimals",
+        token.genesis_txid AS "genesisTxid",
+        token.raw_info AS "info",
+        token.minter_pubkey AS "minterPubKey",
+        token.name AS "name",
+        token.symbol AS "symbol",
+        token.reveal_txid AS "revealTxid",
+        token.reveal_height AS "revealHeight",
+        token.token_pubkey AS "tokenPubKey",
+        token.token_id AS "tokenId",
+        COALESCE(ts.supply, 0) AS "supply",
+        COALESCE(th.holders, 0) AS "holders"
+      FROM
+        token_info token
+      LEFT JOIN token_supply ts ON ts.token_pubkey = token.token_pubkey
+      LEFT JOIN token_holders th ON th.xonly_pubkey = token.token_pubkey
+      LIMIT $1 OFFSET $2
+    `;
 
-    return tokens.map(token => ({
+    // Optimize the query by using subqueries with indexes
+    const tokens = await this.tokenInfoRepository.query(sql, [
+      limit || Constants.QUERY_PAGING_DEFAULT_LIMIT,
+      offset || Constants.QUERY_PAGING_DEFAULT_OFFSET,
+    ]);
+
+    return tokens.map((token) => ({
       ...this.renderTokenInfo(token),
       supply: parseInt(token.supply, 10),
-      holders: parseInt(token.holders, 10)
+      holders: parseInt(token.holders, 10),
     }));
   }
 
@@ -67,19 +76,23 @@ export class TokenService {
   }
 
   async getTokenSupply(tokenIdOrTokenAddr: string): Promise<number | null> {
-    const tokenInfo = await this.getTokenInfoByTokenIdOrTokenAddress(tokenIdOrTokenAddr);
+    const tokenInfo =
+      await this.getTokenInfoByTokenIdOrTokenAddress(tokenIdOrTokenAddr);
     if (!tokenInfo) {
       return null;
     }
 
-    const result = await this.tokenInfoRepository.query(`
+    const result = await this.tokenInfoRepository.query(
+      `
       SELECT COALESCE(SUM(token_amount), 0) as total_supply
       FROM token_mint
       WHERE token_pubkey = $1
-    `, [tokenInfo.tokenPubKey]);
+    `,
+      [tokenInfo.tokenPubKey],
+    );
 
     return parseInt(result[0]?.total_supply || '0', 10);
-  }  
+  }
 
   async getTokenInfoByTokenIdOrTokenAddress(tokenIdOrTokenAddr: string) {
     let where;
@@ -96,6 +109,72 @@ export class TokenService {
       where,
     });
     return this.renderTokenInfo(tokenInfo);
+  }
+
+  async getTokenInfoByTokenIdOrTokenAddressDisplay(tokenIdOrTokenAddr: string) {
+    let where;
+    if (tokenIdOrTokenAddr.includes('_')) {
+      where = { tokenId: tokenIdOrTokenAddr };
+    } else {
+      const tokenPubKey = addressToXOnlyPubKey(tokenIdOrTokenAddr);
+      if (!tokenPubKey) {
+        return null;
+      }
+      where = { tokenPubKey };
+    }
+
+    const tokenInfo = await this.tokenInfoRepository.findOne({
+      where,
+    });
+
+    if (!tokenInfo) {
+      return null;
+    }
+
+    const result = await this.tokenInfoRepository.query(
+      `
+      WITH token_supply AS (
+        SELECT 
+          token_pubkey,
+          COALESCE(SUM(token_amount), 0) AS supply
+        FROM token_mint
+        WHERE token_pubkey = $1
+        GROUP BY token_pubkey
+      ),
+      token_holders AS (
+        SELECT 
+          xonly_pubkey,
+          COUNT(DISTINCT owner_pkh) AS holders
+        FROM tx_out
+        WHERE spend_txid IS NULL AND xonly_pubkey = $1
+        GROUP BY xonly_pubkey
+      )
+      SELECT
+        token.decimals AS "decimals",
+        token.genesis_txid AS "genesisTxid",
+        token.raw_info AS "info",
+        token.minter_pubkey AS "minterPubKey",
+        token.name AS "name",
+        token.symbol AS "symbol",
+        token.reveal_txid AS "revealTxid",
+        token.reveal_height AS "revealHeight",
+        token.token_pubkey AS "tokenPubKey",
+        token.token_id AS "tokenId",
+        COALESCE(ts.supply, 0) AS "supply",
+        COALESCE(th.holders, 0) AS "holders"
+      FROM
+        token_info token
+      LEFT JOIN token_supply ts ON ts.token_pubkey = token.token_pubkey
+      LEFT JOIN token_holders th ON th.xonly_pubkey = token.token_pubkey
+      WHERE token.token_pubkey = $1 OR token.token_id = $2
+      `,
+      [tokenInfo.tokenPubKey, tokenInfo.tokenId],
+    );
+    return {
+      ...this.renderTokenInfo(result[0]),
+      supply: parseInt(result[0].supply, 10),
+      holders: parseInt(result[0].holders, 10),
+    };
   }
 
   renderTokenInfo(tokenInfo: TokenInfoEntity) {
