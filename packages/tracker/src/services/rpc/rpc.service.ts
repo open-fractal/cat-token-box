@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosResponse, Method } from 'axios';
 import * as http from 'http';
 import * as https from 'https';
+import * as btc from 'bitcoinjs-lib';
 
 const httpAgent = new http.Agent({ keepAlive: true });
 const httpsAgent = new https.Agent({ keepAlive: true });
@@ -32,7 +33,11 @@ export class RpcService {
     };
   }
 
-  private async rpc(data: any, printLog: boolean = true) {
+  private async rpc(
+    data: any,
+    logException: boolean = true,
+    throwException: boolean = false,
+  ) {
     try {
       const method: Method = 'POST';
       const config = {
@@ -46,8 +51,12 @@ export class RpcService {
       };
       return await axios.request(config);
     } catch (e) {
-      if (printLog) {
-        this.logger.error(`rpc error, ${e.message}, ${JSON.stringify(data)}`);
+      const _msg = `rpc error, ${e.message}, ${JSON.stringify(data)}`;
+      if (logException) {
+        this.logger.error(_msg);
+      }
+      if (throwException) {
+        throw new Error(_msg);
       }
     }
   }
@@ -90,7 +99,10 @@ export class RpcService {
     return this.rpc(rpcData);
   }
 
-  public async getBlockchainInfo() {
+  public async getBlockchainInfo(
+    logException: boolean = true,
+    throwException: boolean = false,
+  ) {
     const now = Date.now();
     const rpcData = {
       jsonrpc: '1.0',
@@ -98,6 +110,37 @@ export class RpcService {
       method: 'getblockchaininfo',
       params: [],
     };
-    return this.rpc(rpcData);
+    return this.rpc(rpcData, logException, throwException);
+  }
+
+  public async getRawTransaction(
+    txid: string,
+    logException: boolean = true,
+    throwException: boolean = false,
+  ): Promise<btc.Transaction> {
+    const now = Date.now();
+    const rpcData = {
+      jsonrpc: '1.0',
+      id: now,
+      method: 'getrawtransaction',
+      params: [txid, false],
+    };
+    const res = await this.rpc(rpcData, logException, throwException);
+
+    const tx = btc.Transaction.fromHex(res.data.result);
+
+    return tx;
+  }
+
+  public async getRawMempool() {
+    const now = Date.now();
+    const rpcData = {
+      jsonrpc: '1.0',
+      id: now,
+      method: 'getrawmempool',
+      params: [],
+    };
+    const res = await this.rpc(rpcData);
+    return res.data.result;
   }
 }

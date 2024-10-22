@@ -159,6 +159,7 @@ export async function openMinterCall(
         contractIns.preCatTx?.tx,
         0
     )
+
     const sig = btc.crypto.Schnorr.sign(keyInfo.seckey, sighash.hash)
     await contractIns.contract.connect(getDummySigner())
     const openMinterFuncCall = await contractIns.contract.methods.mint(

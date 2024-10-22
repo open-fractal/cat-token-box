@@ -9,6 +9,16 @@ import { Block } from 'bitcoinjs-lib';
 import { TxService } from '../tx/tx.service';
 import { BlockHeader } from '../../common/types';
 import { Constants } from '../../common/constants';
+import { CommonService } from '../common/common.service';
+import {
+  TokenOrderEntity,
+  OrderStatus,
+} from '../../entities/tokenOrder.entity';
+import { ContractType } from '../../routes/orderbook/orderbook.service';
+import { FXPCat20Sell } from '@cat-protocol/cat-smartcontracts';
+
+const fxpCat20Sell = require('@cat-protocol/cat-smartcontracts/artifacts/contracts/token/FXPCat20Sell.json');
+FXPCat20Sell.loadArtifact(fxpCat20Sell);
 
 @Injectable()
 export class BlockService implements OnModuleInit {
@@ -20,7 +30,8 @@ export class BlockService implements OnModuleInit {
     private dataSource: DataSource,
     private readonly rpcService: RpcService,
     private readonly txService: TxService,
-    private configService: ConfigService,
+    private readonly configService: ConfigService,
+    private readonly commonService: CommonService,
     @InjectRepository(BlockEntity)
     private blockEntityRepository: Repository<BlockEntity>,
   ) {
@@ -28,7 +39,11 @@ export class BlockService implements OnModuleInit {
   }
 
   async onModuleInit() {
+    await this.checkRpcConnection();
+    await this.checkDatabaseConnection();
+
     await this.processForceReindex();
+
     this.daemonProcessBlocks();
     this.logger.log('daemon process blocks initialized');
   }
@@ -42,8 +57,39 @@ export class BlockService implements OnModuleInit {
         parseInt(process.env.REINDEX_BLOCK_HEIGHT),
         this.genesisBlockHeight,
       );
-      await this.deleteBlocks(reindexHeight);
-      this.logger.log(`reindex from height ${reindexHeight}`);
+
+      const lastProcessedBlock =
+        await this.commonService.getLastProcessedBlock();
+      const chunkSize = 100;
+      let currentHeight = lastProcessedBlock?.height || 0;
+
+      while (true) {
+        currentHeight -= chunkSize;
+        currentHeight = Math.max(currentHeight, reindexHeight);
+        console.log(
+          `deleting ${chunkSize} blocks from ${currentHeight} to ${currentHeight + chunkSize}`,
+        );
+        await this.deleteBlocks(currentHeight);
+
+        if (currentHeight <= reindexHeight) {
+          break;
+        }
+      }
+    }
+  }
+
+  private async checkRpcConnection() {
+    await this.rpcService.getBlockchainInfo(true, true);
+    this.logger.log('rpc connection established');
+  }
+
+  private async checkDatabaseConnection() {
+    try {
+      await this.blockEntityRepository.count();
+      this.logger.log('database connection established');
+    } catch (e) {
+      this.logger.error(`database not ready, ${e.message}`);
+      throw new Error('database not ready, run `yarn migration:run` first');
     }
   }
 
@@ -76,7 +122,7 @@ export class BlockService implements OnModuleInit {
 
   private async processBlocks() {
     // query last processed block in database
-    const lastProcessedBlock = await this.getLastProcessedBlock();
+    const lastProcessedBlock = await this.commonService.getLastProcessedBlock();
     // the potential next height to be processed is the height of last processed block plus one
     // or the genesis block height if this is the first time run
     const nextHeight = lastProcessedBlock
@@ -147,7 +193,7 @@ export class BlockService implements OnModuleInit {
     if (block.transactions.length === 0) {
       throw new Error('no txs in block');
     }
-    const before = Date.now();
+    const startTs = Date.now();
     // process all the block txs one by one in order
     let catTxsCount = 0;
     let catProcessingTime = 0;
@@ -169,14 +215,22 @@ export class BlockService implements OnModuleInit {
     });
 
     let _percentage = '';
-    const latestBlockHeight = (await this.getBlockchainInfo())?.headers;
+    const latestBlockHeight = (await this.commonService.getBlockchainInfo())
+      ?.headers;
     if (latestBlockHeight && latestBlockHeight !== 0) {
       _percentage = `[${(
         (blockHeader.height / latestBlockHeight) *
         100
       ).toFixed(2)}%] `.padStart(10, ' ');
     }
-    const processingTime = Math.ceil(Date.now() - before);
+
+    try {
+      await this.processPartiallyFilledOrders(blockHeader);
+    } catch (e) {
+      this.logger.error(`process partially filled orders error, ${e.message}`);
+    }
+
+    const processingTime = Math.ceil(Date.now() - startTs);
     const tps = Math.ceil((block.transactions.length / processingTime) * 1000);
     const catTps = Math.ceil((catTxsCount / catProcessingTime) * 1000);
 
@@ -206,21 +260,59 @@ export class BlockService implements OnModuleInit {
     return resp.data.result;
   }
 
-  public async getLastProcessedBlock(): Promise<BlockEntity | null> {
-    const blocks = await this.blockEntityRepository.find({
-      take: 1,
-      order: { height: 'DESC' },
+  async processPartiallyFilledOrders(blockHeader: BlockHeader) {
+    let sql = `
+      with open_orders as (
+        select
+        *
+      from
+        token_order
+      )
+      select
+        too.*
+      from
+        token_order too left join
+        open_orders oo on oo.txid = too.spend_txid and oo.txid != too.txid
+      where
+        too.status = 'partially_filled' and
+        oo.txid is null;
+
+    `;
+
+    const tokens = await this.blockEntityRepository.query(sql); // Optimize the query by using subqueries with indexes
+
+    const entities: TokenOrderEntity[] = [];
+    for (const token of tokens) {
+      const isBuy = token.md5 === ContractType.FXPCAT20_BUY;
+      const outputIndex = isBuy ? 3 : 2;
+      const entity: TokenOrderEntity = {
+        txid: token.spend_txid,
+        outputIndex,
+        tokenPubKey: token.token_pubkey,
+        tokenTxid: isBuy ? null : token.txid,
+        tokenOutputIndex: isBuy ? null : outputIndex,
+        ownerPubKey: token.owner_pubkey,
+        price: token.price,
+        spendTxid: null,
+        spendInputIndex: null,
+        blockHeight: blockHeader.height,
+        createdAt: new Date(blockHeader.time * 1000),
+        spendBlockHeight: null,
+        spendCreatedAt: null,
+        takerPubKey: null,
+        status: OrderStatus.PARTIALLY_OPEN,
+        fillAmount: null,
+        genesisTxid: token.genesis_txid || token.txid,
+        genesisOutputIndex: token.genesis_output_index || token.output_index,
+        md5: token.md5,
+        tokenAmount: BigInt(token.token_amount) - BigInt(token.fill_amount),
+      };
+      console.log(entity, token);
+      entities.push(entity);
+    }
+
+    await this.dataSource.manager.transaction(async (manager) => {
+      await manager.save(TokenOrderEntity, entities);
     });
-    return blocks[0] || null;
-  }
-
-  public async getLastProcessedBlockHeight(): Promise<number | null> {
-    const block = await this.getLastProcessedBlock();
-    return block?.height || null;
-  }
-
-  public async getBlockchainInfo() {
-    const resp = await this.rpcService.getBlockchainInfo();
-    return resp?.data?.result;
   }
 }

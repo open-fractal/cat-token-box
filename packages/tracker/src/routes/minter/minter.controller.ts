@@ -1,13 +1,15 @@
-import { Controller, Get, Param, Query } from '@nestjs/common';
+import { Controller, Get, Param, Query, Inject } from '@nestjs/common';
 import { MinterService } from './minter.service';
 import { errorResponse, okResponse } from '../../common/utils';
 import { ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { CacheTTL } from '@nestjs/cache-manager';
 
 @Controller('minters')
 export class MinterController {
   constructor(private readonly minterService: MinterService) {}
 
   @Get(':tokenIdOrTokenAddr/utxos')
+  @CacheTTL(1000 * 60)
   @ApiTags('minter')
   @ApiOperation({ summary: 'Get minter utxos by token id or token address' })
   @ApiParam({
@@ -36,8 +38,8 @@ export class MinterController {
     try {
       const utxos = await this.minterService.getMinterUtxos(
         tokenIdOrTokenAddr,
-        offset,
-        limit,
+        parseInt(offset.toString()),
+        Math.min(parseInt(limit.toString()), 500),
       );
       return okResponse(utxos);
     } catch (e) {
@@ -62,6 +64,31 @@ export class MinterController {
     try {
       const utxos =
         await this.minterService.getMinterUtxoCount(tokenIdOrTokenAddr);
+
+      return okResponse(utxos);
+    } catch (e) {
+      return errorResponse(e);
+    }
+  }
+
+  @Get(':tokenIdOrTokenAddr/mintCount')
+  @ApiTags('minter')
+  @ApiOperation({
+    summary: 'Get minter utxo count by token id or token address',
+  })
+  @ApiParam({
+    name: 'tokenIdOrTokenAddr',
+    required: true,
+    type: String,
+    description: 'token id or token address',
+  })
+  async getMinterMints(
+    @Param('tokenIdOrTokenAddr') tokenIdOrTokenAddr: string,
+  ) {
+    try {
+      const utxos =
+        await this.minterService.getMinterMintCount(tokenIdOrTokenAddr);
+
       return okResponse(utxos);
     } catch (e) {
       return errorResponse(e);

@@ -26,6 +26,29 @@ export function getPrivKey() {
     }
 }
 
+export function getP2TRKeyInfoFromWif(wif: string): KeyInfo {
+    const seckey = new btc.PrivateKey(wif, btc.Networks.testnet)
+    const { tweakedPrivKey } = seckey.createTapTweak()
+    const privkey = btc.PrivateKey.fromBuffer(tweakedPrivKey)
+    const pubkey = privkey.toPublicKey()
+    const addrP2TR = seckey.toAddress(null, btc.Address.PayToTaproot)
+    const pubKeyPrefix = pubkey.toString().slice(0, 2)
+    const pubkeyX = btc.Script.fromAddress(addrP2TR)
+        .getPublicKeyHash()
+        .toString('hex')
+    const xAddress = hash160(pubkeyX)
+    const res = {
+        addr: addrP2TR,
+        seckey: privkey,
+        pubkey: pubkey,
+        pubKeyPrefix: '',
+        pubkeyX: pubkeyX,
+        xAddress: xAddress,
+    }
+
+    return res
+}
+
 export function getKeyInfoFromWif(wif: string): KeyInfo {
     const seckey = new btc.PrivateKey(wif, btc.Networks.testnet)
     const pubkey = seckey.toPublicKey()

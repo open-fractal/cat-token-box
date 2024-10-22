@@ -2,12 +2,14 @@ import { Controller, Get, Param, Query } from '@nestjs/common';
 import { TokenService } from './token.service';
 import { okResponse, errorResponse } from '../../common/utils';
 import { ApiOperation, ApiParam, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { CacheTTL } from '@nestjs/cache-manager';
 
 @Controller('tokens')
 export class TokenController {
   constructor(private readonly tokenService: TokenService) {}
 
   @Get()
+  @CacheTTL(1000 * 60 * 5)
   @ApiTags('token')
   @ApiOperation({ summary: 'List all tokens' })
   @ApiQuery({
@@ -29,7 +31,6 @@ export class TokenController {
     try {
       const tokens = await this.tokenService.listAllTokens(offset, limit);
       const total = await this.tokenService.countAllTokens();
-
       return okResponse({
         tokens,
         total,
@@ -62,6 +63,7 @@ export class TokenController {
   @Get(':tokenIdOrTokenAddr')
   @ApiTags('token')
   @ApiOperation({ summary: 'Get token info by token id or token address' })
+  @CacheTTL(30)
   @ApiParam({
     name: 'tokenIdOrTokenAddr',
     required: true,
@@ -74,7 +76,6 @@ export class TokenController {
         await this.tokenService.getTokenInfoByTokenIdOrTokenAddressDisplay(
           tokenIdOrTokenAddr,
         );
-      console.log(tokenInfo);
       return okResponse(tokenInfo);
     } catch (e) {
       return errorResponse(e);
@@ -152,52 +153,6 @@ export class TokenController {
         ownerAddr,
       );
       return okResponse(balance);
-    } catch (e) {
-      return errorResponse(e);
-    }
-  }
-
-  @Get(':tokenIdOrTokenAddr/addresses/:ownerAddr/history')
-  @ApiTags('token')
-  @ApiOperation({ summary: 'Get token tx history by owner address' })
-  @ApiParam({
-    name: 'tokenIdOrTokenAddr',
-    required: true,
-    type: String,
-    description: 'token id or token address',
-  })
-  @ApiParam({
-    name: 'ownerAddr',
-    required: true,
-    type: String,
-    description: 'token owner address',
-  })
-  @ApiQuery({
-    name: 'offset',
-    required: false,
-    type: Number,
-    description: 'paging offset',
-  })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    type: Number,
-    description: 'paging limit',
-  })
-  async getTokenTxHistoryByOwnerAddress(
-    @Param('tokenIdOrTokenAddr') tokenIdOrTokenAddr: string,
-    @Param('ownerAddr') ownerAddr: string,
-    @Query('offset') offset: number,
-    @Query('limit') limit: number,
-  ) {
-    try {
-      const txHistory = await this.tokenService.getTokenTxHistoryByOwnerAddress(
-        tokenIdOrTokenAddr,
-        ownerAddr,
-        offset,
-        limit,
-      );
-      return okResponse(txHistory);
     } catch (e) {
       return errorResponse(e);
     }
